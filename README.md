@@ -10,7 +10,7 @@ This study investigated the predictive contribution of meteorological informatio
 
 The analysis used an exploratory spatiotemporal machine-learning framework with temporally and geographically separated evaluation partitions.
 
-The repository contains the core code used for:
+The repository contains core code for:
 
 - gradient-boosting algorithm benchmarking;
 - CatBoost hyperparameter optimization;
@@ -53,42 +53,33 @@ The scripts are numbered according to the main analysis workflow.
 
 ### 01. Algorithm Benchmarking
 
-File: `code/01_algorithm_benchmarking.py`
+`code/01_algorithm_benchmarking.py`
 
-Compares four gradient-boosting algorithms under default hyperparameters:
+Compares CatBoost, XGBoost, LightGBM, and scikit-learn HistGradientBoostingClassifier under default hyperparameters within the exploratory spatiotemporal evaluation framework.
 
-- CatBoost
-- XGBoost
-- LightGBM
-- scikit-learn HistGradientBoostingClassifier
-
-The candidate algorithms are evaluated within the exploratory spatiotemporal partitioning framework described in the manuscript.
-
-The spatial evaluation partition contributed to algorithm selection; therefore, the reported algorithm-comparison results should not be interpreted as independent evidence of algorithm superiority.
+The spatial evaluation partition contributed to algorithm selection; therefore, the resulting comparison is selection-influenced and should not be interpreted as independent evidence of algorithm superiority.
 
 ### 02. CatBoost Hyperparameter Optimization
 
-File: `code/02_catboost_hyperparameter_tuning.py`
+`code/02_catboost_hyperparameter_tuning.py`
 
 Performs CatBoost hyperparameter optimization using Optuna with 30 trials and five-fold stratified cross-validation.
 
-The selected hyperparameters are saved in:
+The selected hyperparameters are stored in:
 
 `config/catboost_best_params.json`
 
 ### 03. Spatiotemporal Recursive Feature Elimination
 
-File: `code/03_spatiotemporal_rfe.py`
+`code/03_spatiotemporal_rfe.py`
 
 Performs recursive feature elimination using CatBoost feature importance.
 
-At each iteration, model discrimination is evaluated in the temporal and spatial evaluation partitions.
-
-The feature-selection objective is defined as the mean of the temporal- and spatial-partition AUCs.
+At each iteration, model discrimination is evaluated in the temporal and spatial evaluation partitions. The selection objective is the mean of the temporal- and spatial-partition AUCs.
 
 The minimum-complexity rule selects the smallest feature subset within 0.01 of the maximum joint AUC.
 
-The final selected feature set is stored in:
+The selected feature set is stored in:
 
 `config/rfe_selected_features.csv`
 
@@ -96,62 +87,54 @@ Because the temporal and spatial evaluation partitions contributed directly to f
 
 ### 04. Parallel Model Evaluation
 
-File: `code/04_parallel_model_evaluation.py`
+`code/04_parallel_model_evaluation.py`
 
-Fits and evaluates four parallel CatBoost models using different predictor sets:
+Fits and evaluates four parallel CatBoost models:
 
 - **M1:** Full model
 - **M2:** Meteorological-only model
 - **M3:** Calendar-seasonality model
 - **M4:** Socio-geographical model
 
-The models are evaluated across the study's training, internal tuning, temporal evaluation, and spatial evaluation partitions.
-
-The parallel-model comparisons are descriptive comparisons between predictor sets and should not be interpreted as estimates of causal or independent incremental effects.
+The models are evaluated across the training, internal tuning, temporal evaluation, and spatial evaluation partitions.
 
 ### 05. SHAP Analysis
 
-File: `code/05_shap_analysis.py`
+`code/05_shap_analysis.py`
 
-Performs SHAP-based interpretation of the fitted CatBoost models using TreeExplainer.
+Performs SHAP-based interpretation of the fitted CatBoost models using TreeExplainer and summarizes predictor-level model contributions.
 
-The analysis summarizes feature-level model contributions and produces SHAP-based importance outputs for the fitted models.
-
-SHAP values are interpreted as model-dependent attribution measures and do not represent variance explained, independent effects, or causal effects.
+SHAP values are interpreted as model-dependent attribution measures and not as causal effects or variance explained.
 
 ### 06. SHAP Contribution Decomposition
 
-File: `code/06_shap_contribution_decomposition.py`
+`code/06_shap_contribution_decomposition.py`
 
-Summarizes SHAP contributions according to three predictor classes:
+Summarizes SHAP contributions across three predictor classes:
 
 - meteorological predictors;
 - calendar-temporal predictors; and
 - socio-geographical predictors.
 
-The contribution shares are calculated from mean absolute SHAP magnitudes within the fitted model.
-
-These values describe the distribution of prediction magnitude within the fitted model and should not be interpreted as causal contributions.
+Contribution shares are based on mean absolute SHAP magnitudes within the fitted model.
 
 ### 07. DeLong, NRI, and IDI Analyses
 
-File: `code/07_delong_nri_idi.py`
+`code/07_delong_nri_idi.py`
 
 Performs descriptive pairwise model comparisons using:
 
-- DeLong tests for correlated receiver operating characteristic AUCs;
+- DeLong tests for correlated AUCs;
 - net reclassification improvement (NRI); and
 - integrated discrimination improvement (IDI).
 
-The analyses compare the parallel predictor-set models within the completed exploratory workflow.
-
-Because feature and model selection used information from the evaluation partitions, these comparisons are interpreted descriptively rather than as confirmatory statistical inference.
+Because model and feature selection used information from the evaluation partitions, these comparisons are interpreted descriptively rather than as confirmatory statistical inference.
 
 ### 08. Lead-Time Model Comparison
 
-File: `code/08_lead_time_model_comparison.py`
+`code/08_lead_time_model_comparison.py`
 
-Performs the retrospective lead-time analysis across prediction horizons from 0 to 4 weeks.
+Performs retrospective lead-time analyses across prediction horizons from 0 to 4 weeks.
 
 Three predictor sets are compared:
 
@@ -169,99 +152,33 @@ The study covers the 50 U.S. states, the District of Columbia, and Puerto Rico.
 
 The primary study period extends from epidemiological week 40 of 2010 through week 24 of 2026.
 
-The exploratory evaluation framework includes four analytic partitions:
+The exploratory evaluation framework includes:
 
-1. training partition;
-2. internal tuning partition;
-3. temporally separated evaluation partition; and
-4. geographically separated evaluation partition.
+1. a training partition;
+2. an internal tuning partition;
+3. a temporally separated evaluation partition; and
+4. a geographically separated evaluation partition.
 
 A fixed random seed of `123` is used where specified in the analysis scripts.
 
-The temporal and spatial evaluation partitions were excluded from final model fitting but contributed to model or feature selection at different stages of the workflow.
-
-Accordingly, the reported evaluation performance is considered exploratory and selection-influenced rather than independently externally validated.
+The temporal and spatial evaluation partitions were excluded from final model fitting but contributed to model or feature selection at different stages of the workflow. Accordingly, reported evaluation performance should be interpreted as exploratory and selection-influenced rather than as independent external validation.
 
 ## Data Sources
 
-The study used publicly available, aggregate, area-level data.
+The study used publicly available aggregate, area-level data from:
 
-### CDC FluView Interactive
+- CDC FluView Interactive;
+- ECMWF ERA5-Land through Google Earth Engine;
+- the U.S. Census Bureau; and
+- the CDC FluSight Forecast Hub for the post hoc contextual analysis.
 
-Weekly influenza virological surveillance data were obtained from the CDC FluView Interactive application:
-
-**National, Regional, and State Level Outpatient Illness and Viral Surveillance**
-
-The study used weekly surveillance information for the 50 U.S. states, the District of Columbia, and Puerto Rico.
-
-The primary study period was:
-
-**2010 epidemiological week 40 through 2026 epidemiological week 24**
-
-Variables used included weekly numbers of specimens tested, influenza-positive specimens, and weekly influenza test positivity.
-
-Access date:
-
-**22 July 2026**
-
-### ERA5-Land
-
-Meteorological data were obtained from the ECMWF ERA5-Land daily aggregated reanalysis product through Google Earth Engine.
-
-Meteorological data covered 2000–2026.
-
-The period 2000–2009 was used to construct climatological baseline values.
-
-The period 2010–2026 was used for the primary study analyses.
-
-Meteorological variables included measures related to:
-
-- air temperature;
-- relative humidity;
-- absolute humidity;
-- surface wind speed;
-- surface pressure;
-- solar radiation; and
-- precipitation.
-
-Detailed meteorological variable construction and temporal-lag definitions are provided in the manuscript and Supplementary Information.
-
-### U.S. Census Bureau
-
-Population-density information was obtained from 2020 U.S. Census Bureau data.
-
-The corresponding population-density variable was used as a socio-geographical predictor.
-
-Population-density information was obtained from 2020 U.S. Census Bureau data and was used as a socio-geographical predictor. Additional source and processing details are provided in the manuscript and Supplementary Information.
-
-### CDC FluSight Forecast Hub
-
-Archived influenza hospitalization forecasts and corresponding finalized hospitalization target data used in the post hoc contextual analysis were obtained from the CDC FluSight Forecast Hub.
-
-The FluSight analysis was used only as a post hoc downstream contextual analysis.
-
-It was not used for primary model development, algorithm selection, hyperparameter optimization, or recursive feature elimination.
-
-## Data Availability
-
-The source datasets used in this study are publicly available from their respective data providers.
-
-Raw copies of the complete source databases are not redistributed in this repository.
-
-Information required to identify the public data sources and study-specific subsets is provided in:
-
-`data/README.md`
-
-The analysis-ready dataset was derived from the public sources described above.
+Detailed information on source datasets, study periods, variables, spatial coverage, and processing procedures is provided in the manuscript, Supplementary Information, and `data/README.md`.
 
 No individual-level or identifiable participant data were used.
 
 ## Software
 
-The primary analyses were conducted using:
-
-- Python 3.10
-- R 4.5.1
+The primary analyses were conducted using Python 3.10 and R 4.5.1.
 
 Principal Python packages include:
 
@@ -276,17 +193,11 @@ Principal Python packages include:
 - shap
 - matplotlib
 
-Exact Python package versions used for the analysis environment are provided in:
-
-`requirements.txt`
+Python package dependencies are listed in `requirements.txt`.
 
 ## Reproducibility
 
-The scripts are numbered according to the main analysis workflow.
-
-Where applicable, the same random seed and partitioning rules described in the manuscript are retained in the code.
-
-The primary sequence of the machine-learning workflow is:
+The scripts are numbered according to the main machine-learning workflow:
 
 ```text
 Algorithm benchmarking
@@ -306,9 +217,9 @@ DeLong / NRI / IDI comparisons
 0–4-week lead-time model comparison
 ```
 
-The repository is intended to document the core computational workflow supporting the manuscript.
+This repository documents the core computational workflow supporting the manuscript.
 
-Some additional sensitivity and supplementary analyses are described separately in the manuscript and Supplementary Information.
+Additional sensitivity and supplementary analyses are described in the manuscript and Supplementary Information.
 
 ## Interpretation
 
@@ -318,13 +229,11 @@ The temporal and spatial evaluation partitions contributed to feature selection,
 
 Therefore, performance estimates from these partitions are selection-influenced and should not be interpreted as independent external validation.
 
-The analysis does not establish causal meteorological effects or operational forecasting readiness.
-
-Prospective evaluation using a locked modelling pipeline would be required before operational use.
+The analysis does not establish causal meteorological effects or operational forecasting readiness. Prospective evaluation using a locked modelling pipeline would be required before operational use.
 
 ## Manuscript
 
-The repository accompanies the manuscript:
+This repository accompanies the manuscript:
 
 **Meteorological Signals in Spatiotemporal Prediction of High-Activity Influenza Weeks in the United States: An Exploratory Machine-Learning Study**
 
@@ -340,7 +249,7 @@ If you use code from this repository, please cite the associated manuscript:
 > *Meteorological Signals in Spatiotemporal Prediction of High-Activity Influenza Weeks in the United States: An Exploratory Machine-Learning Study.*  
 > Manuscript submitted for publication.
 
-The citation information should be updated after publication.
+The citation information can be updated after publication.
 
 ## Contact
 
