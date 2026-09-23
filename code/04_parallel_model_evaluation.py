@@ -1,18 +1,35 @@
 """
+Public-repository analysis script.
+
+Input data
+----------
+This script starts from the analysis-ready study-area-week dataset stored at
+``data/analysis_ready_data.csv``. Raw-data acquisition, source provenance,
+and variable construction are documented in ``data/README.md`` and the
+manuscript/Supplementary Information. This script does not recreate the raw
+source databases.
+
+Paths are resolved relative to the repository root so the script can be run
+on another computer without editing local drive paths.
+"""
+
+"""
 流感预测研究 — 四模型预测贡献分解与双重验证框架
 ======================================================
-M1: Full model (25变量 - 全部特征)
-M2: Meteorological model (21个气象变量)
+M1: Full model (29 variables)
+M2: Meteorological model (25 variables)
 M3: Calendar temporal model (2个时间特征 - 基线参考)
 M4: Socio-geographical model (2个社会地理特征)
 ======================================================
 """
 
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import matplotlib
 
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 import json
@@ -30,8 +47,14 @@ plt.rcParams["axes.unicode_minus"] = False
 # ======================================================
 # 1. 读取数据
 # ======================================================
-print("🔄 正在读取数据...")
-data = pd.read_csv(r"E:\USFlu\20260804\0Data\flu_final_updated_file.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "data" / "analysis_ready_data.csv"
+PARAM_PATH = PROJECT_ROOT / "config" / "catboost_best_params.json"
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "04_parallel_model_evaluation"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+print("🔄 正在读取分析就绪数据集...")
+data = pd.read_csv(DATA_PATH)
 data = data.sort_values("FID").reset_index(drop=True)
 
 
@@ -71,6 +94,16 @@ features_calendar = ["week_sin", "week_cos"]
 
 features_socio_geo = ["pop_den", "hhs_region"]
 
+required_columns = set(
+    ["FID", "REGION", "YEAR", y_col] + features_all
+)
+missing_columns = sorted(required_columns.difference(data.columns))
+if missing_columns:
+    raise ValueError(
+        f"analysis_ready_data.csv is missing required columns: {missing_columns}"
+    )
+
+
 # 统一组织四模型的配置：名称、特征列表、线条颜色、线条类型
 model_configs = [
     {"id": "M1", "name": "Full model", "features": features_all, "color": "#e78ac3", "ls": "-"},
@@ -89,12 +122,12 @@ for cfg in model_configs:
 print("\n✂️ 正在进行【二维四区】时空隔离划分...")
 
 cities = data["REGION"].unique()
-dev_cities, spat_ext_cities = train_test_split(cities, test_size=0.2, random_state=123)
+dev_cities, spat_eval_cities = train_test_split(cities, test_size=0.2, random_state=123)
 
 dev_data    = data[data["REGION"].isin(dev_cities)]
-spat_ext_df = data[data["REGION"].isin(spat_ext_cities)]
+spat_eval_df = data[data["REGION"].isin(spat_eval_cities)]
 
-temp_ext_df = dev_data[dev_data["YEAR"] >= 2024]
+temp_eval_df = dev_data[dev_data["YEAR"] >= 2024]
 history_df  = dev_data[dev_data["YEAR"] < 2024]
 
 train_df, val_df = train_test_split(
@@ -103,18 +136,18 @@ train_df, val_df = train_test_split(
 
 y_train    = train_df[y_col]
 y_val      = val_df[y_col]
-y_temp_ext = temp_ext_df[y_col]
-y_spat_ext = spat_ext_df[y_col]
+y_temp_eval = temp_eval_df[y_col]
+y_spat_eval = spat_eval_df[y_col]
 
 print(f"  训练集:       {len(train_df)} 条")
-print(f"  内部验证集:   {len(val_df)} 条")
-print(f"  时间外部验证: {len(temp_ext_df)} 条")
-print(f"  空间外部验证: {len(spat_ext_df)} 条")
+print(f"  内部调参集:   {len(val_df)} 条")
+print(f"  时间评估: {len(temp_eval_df)} 条")
+print(f"  空间评估: {len(spat_eval_df)} 条")
 
 # ======================================================
 # 4. 加载调参阶段保存的最优超参数
 # ======================================================
-param_json_path = r"E:\USFlu\20260804\1Model\2TiaoCan\catboost_best_params.json"
+param_json_path = PARAM_PATH
 with open(param_json_path, 'r', encoding='utf-8') as f:
     best_params = json.load(f)
 best_params.update({'random_state': 123, 'verbose': False})
@@ -130,8 +163,8 @@ def train_and_predict(feature_list, model_name):
     return {
         "train":    model.predict_proba(train_df[feature_list])[:, 1],
         "val":      model.predict_proba(val_df[feature_list])[:, 1],
-        "temp_ext": model.predict_proba(temp_ext_df[feature_list])[:, 1],
-        "spat_ext": model.predict_proba(spat_ext_df[feature_list])[:, 1],
+        "temp_eval": model.predict_proba(temp_eval_df[feature_list])[:, 1],
+        "spat_eval": model.predict_proba(spat_eval_df[feature_list])[:, 1],
     }
 
 print("\n🏋️ 开始训练所有四个子模型...")
@@ -142,8 +175,7 @@ for cfg in model_configs:
 # ======================================================
 # 6. 输出路径配置
 # ======================================================
-save_dir = r"E:\USFlu\20260804\1Model\4GongxianFen\1AUC"
-os.makedirs(save_dir, exist_ok=True)
+save_dir = OUTPUT_DIR
 
 # ======================================================
 # 7. 四个验证分区的属性定义
@@ -166,16 +198,16 @@ partition_configs = [
         "filename":  "ROC_Internal_tuning.png",
     },
     {
-        "key":       "temp_ext",
-        "y_true":    y_temp_ext,
+        "key":       "temp_eval",
+        "y_true":    y_temp_eval,
         "title":     "ROC Curve – Temporal evaluation",
         "label":     "Temporal evaluation",
         "panel":     "c ",
         "filename":  "ROC_Temporal_evaluation.png",
     },
     {
-        "key":       "spat_ext",
-        "y_true":    y_spat_ext,
+        "key":       "spat_eval",
+        "y_true":    y_spat_eval,
         "title":     "ROC Curve – Spatial evaluation",
         "label":     "Spatial evaluation",
         "panel":     "d ",
