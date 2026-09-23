@@ -1,6 +1,4 @@
 """
-Public-repository analysis script.
-
 Input data
 ----------
 This script starts from the analysis-ready study-area-week dataset stored at
