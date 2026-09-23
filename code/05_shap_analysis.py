@@ -1,5 +1,4 @@
 """
-Public-repository analysis script.
 
 Input data
 ----------
