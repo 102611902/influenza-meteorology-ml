@@ -1,4 +1,19 @@
 """
+Public-repository analysis script.
+
+Input data
+----------
+This script starts from the analysis-ready study-area-week dataset stored at
+``data/analysis_ready_data.csv``. Raw-data acquisition, source provenance,
+and variable construction are documented in ``data/README.md`` and the
+manuscript/Supplementary Information. This script does not recreate the raw
+source databases.
+
+Paths are resolved relative to the repository root so the script can be run
+on another computer without editing local drive paths.
+"""
+
+"""
 流感预测研究 — 四模型 SHAP 特征贡献分析 (学术无缝对齐优化版)
 ======================================================
 1. 自动计算 M1、M2、M3、M4 四个模型的 SHAP 矩阵
@@ -11,9 +26,11 @@
 """
 
 import json
+from pathlib import Path
 import os
 from catboost import CatBoostClassifier
 import matplotlib
+matplotlib.use("Agg")
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,13 +38,56 @@ import pandas as pd
 import shap
 from sklearn.model_selection import train_test_split
 
-matplotlib.use("TkAgg")
 
 # ======================================================
 # 1. 读取数据
 # ======================================================
-print("🔄 正在读取数据...")
-data = pd.read_csv(r"E:\USFlu\20260804\0Data\flu_final_updated_file_renamed.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "data" / "analysis_ready_data.csv"
+PARAM_PATH = PROJECT_ROOT / "config" / "catboost_best_params.json"
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "05_shap_analysis"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Map the technical analysis-data column names to the human-readable labels
+# used in the SHAP figures. If the readable labels already exist, they are kept.
+FEATURE_RENAME_MAP = {
+    "sp_max": "Maximum surface pressure",
+    "sp_min": "Minimum surface pressure",
+    "solar_rad_max": "Maximum solar radiation",
+    "Temp_anomaly": "Temperature anomaly",
+    "AH_anomaly": "Absolute humidity anomaly",
+    "Temp_max_prior2": "Maximum temperature, 2 weeks prior",
+    "Temp_min_prior5": "Minimum temperature, 5 weeks prior",
+    "AH_mean_prior3": "Mean absolute humidity, 3 weeks prior",
+    "AH_mean_prior4": "Mean absolute humidity, 4 weeks prior",
+    "Precip_sum_prior5": "Total precipitation, 5 weeks prior",
+    "Precip_sum_prior6": "Total precipitation, 6 weeks prior",
+    "Solar_mean_prior5": "Mean solar radiation, 5 weeks prior",
+    "Solar_mean_prior6": "Mean solar radiation, 6 weeks prior",
+    "Temp_anomaly_prior1": "Temperature anomaly, 1 week prior",
+    "Temp_anomaly_prior3": "Temperature anomaly, 3 weeks prior",
+    "Temp_anomaly_prior4": "Temperature anomaly, 4 weeks prior",
+    "Temp_anomaly_prior5": "Temperature anomaly, 5 weeks prior",
+    "Temp_anomaly_prior6": "Temperature anomaly, 6 weeks prior",
+    "RH_anomaly_prior1": "Relative humidity anomaly, 1 week prior",
+    "RH_anomaly_prior6": "Relative humidity anomaly, 6 weeks prior",
+    "AH_anomaly_prior2": "Absolute humidity anomaly, 2 weeks prior",
+    "AH_anomaly_prior5": "Absolute humidity anomaly, 5 weeks prior",
+    "Solar_anomaly_prior1": "Solar radiation anomaly, 1 week prior",
+    "Solar_anomaly_prior3": "Solar radiation anomaly, 3 weeks prior",
+    "Solar_anomaly_prior4": "Solar radiation anomaly, 4 weeks prior",
+    "week_sin": "Calendar week sine",
+    "week_cos": "Calendar week cosine",
+    "hhs_region": "HHS region",
+    "pop_den": "Population density"
+}
+
+print("🔄 正在读取分析就绪数据集...")
+data = pd.read_csv(DATA_PATH)
+data = data.rename(columns={
+    old: new for old, new in FEATURE_RENAME_MAP.items()
+    if old in data.columns and new not in data.columns
+})
 data = data.sort_values("FID").reset_index(drop=True)
 
 y_col = "positivity_rate_P75_flag"
@@ -105,6 +165,16 @@ features_socio_geo = [
     "Population density",
 ]
 
+required_columns = set(
+    ["FID", "REGION", "YEAR", y_col] + features_all
+)
+missing_columns = sorted(required_columns.difference(data.columns))
+if missing_columns:
+    raise ValueError(
+        f"analysis_ready_data.csv is missing required columns: {missing_columns}"
+    )
+
+
 
 def get_feature_subgroup(var_name):
   if var_name in features_calendar:
@@ -153,7 +223,7 @@ model_configs = [
 # ======================================================
 print("✂️ 正在进行时空隔离划分...")
 cities = data["REGION"].unique()
-dev_cities, spat_ext_cities = train_test_split(
+dev_cities, spat_eval_cities = train_test_split(
     cities, test_size=0.2, random_state=123
 )
 
@@ -168,9 +238,7 @@ y_train = train_df[y_col]
 # ======================================================
 # 4. 加载最优超参数
 # ======================================================
-param_json_path = (
-    r"E:\USFlu\20260804\1Model\2TiaoCan\catboost_best_params.json"
-)
+param_json_path = PARAM_PATH
 with open(param_json_path, "r", encoding="utf-8") as f:
   best_params = json.load(f)
 best_params.update({"random_state": 123, "verbose": False})
@@ -195,8 +263,7 @@ for m_cfg in model_configs:
   m_cfg["shap_values"] = shap_vals
   m_cfg["X_data"] = X_tr
 
-save_dir = r"E:\USFlu\20260804\1Model\4GongxianFen\2SHAP"
-os.makedirs(save_dir, exist_ok=True)
+save_dir = OUTPUT_DIR
 
 font_size = 20
 font_tnr = "Times New Roman"
