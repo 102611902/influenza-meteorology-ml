@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Public-repository analysis script.
 
 Input data
 ----------
