@@ -1,4 +1,19 @@
 """
+Public-repository analysis script.
+
+Input data
+----------
+This script starts from the analysis-ready study-area-week dataset stored at
+``data/analysis_ready_data.csv``. Raw-data acquisition, source provenance,
+and variable construction are documented in ``data/README.md`` and the
+manuscript/Supplementary Information. This script does not recreate the raw
+source databases.
+
+Paths are resolved relative to the repository root so the script can be run
+on another computer without editing local drive paths.
+"""
+
+"""
 流感预测研究 — SHAP 气象贡献占比分析
 ======================================================
 输出内容：
@@ -11,6 +26,8 @@
 ======================================================
 """
 
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -22,14 +39,49 @@ import os
 # ======================================================
 # 1. 配置路径 (与 20260714 最新工作流完全一致)
 # ======================================================
-input_path = r"E:\USFlu\20260804\0Data\flu_final_updated_file_renamed.csv"
-output_dir = r"E:\USFlu\20260804\1Model\4GongxianFen\3GXSHAP"
-os.makedirs(output_dir, exist_ok=True)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+input_path = PROJECT_ROOT / "data" / "analysis_ready_data.csv"
+param_json_path = PROJECT_ROOT / "config" / "catboost_best_params.json"
+output_dir = PROJECT_ROOT / "outputs" / "06_shap_contribution_decomposition"
+output_dir.mkdir(parents=True, exist_ok=True)
+
+# Map technical feature names to the human-readable names used in outputs.
+FEATURE_RENAME_MAP = {
+    "sp_max": "Maximum surface pressure",
+    "sp_min": "Minimum surface pressure",
+    "solar_rad_max": "Maximum solar radiation",
+    "Temp_anomaly": "Temperature anomaly",
+    "AH_anomaly": "Absolute humidity anomaly",
+    "Temp_max_prior2": "Maximum temperature, 2 weeks prior",
+    "Temp_min_prior5": "Minimum temperature, 5 weeks prior",
+    "AH_mean_prior3": "Mean absolute humidity, 3 weeks prior",
+    "AH_mean_prior4": "Mean absolute humidity, 4 weeks prior",
+    "Precip_sum_prior5": "Total precipitation, 5 weeks prior",
+    "Precip_sum_prior6": "Total precipitation, 6 weeks prior",
+    "Solar_mean_prior5": "Mean solar radiation, 5 weeks prior",
+    "Solar_mean_prior6": "Mean solar radiation, 6 weeks prior",
+    "Temp_anomaly_prior1": "Temperature anomaly, 1 week prior",
+    "Temp_anomaly_prior3": "Temperature anomaly, 3 weeks prior",
+    "Temp_anomaly_prior4": "Temperature anomaly, 4 weeks prior",
+    "Temp_anomaly_prior5": "Temperature anomaly, 5 weeks prior",
+    "Temp_anomaly_prior6": "Temperature anomaly, 6 weeks prior",
+    "RH_anomaly_prior1": "Relative humidity anomaly, 1 week prior",
+    "RH_anomaly_prior6": "Relative humidity anomaly, 6 weeks prior",
+    "AH_anomaly_prior2": "Absolute humidity anomaly, 2 weeks prior",
+    "AH_anomaly_prior5": "Absolute humidity anomaly, 5 weeks prior",
+    "Solar_anomaly_prior1": "Solar radiation anomaly, 1 week prior",
+    "Solar_anomaly_prior3": "Solar radiation anomaly, 3 weeks prior",
+    "Solar_anomaly_prior4": "Solar radiation anomaly, 4 weeks prior",
+    "week_sin": "Calendar week sine",
+    "week_cos": "Calendar week cosine",
+    "hhs_region": "HHS region",
+    "pop_den": "Population density"
+}
 
 y_col = "positivity_rate_P75_flag"
 
 # ======================================================
-# 2. 定义已重命名的特征分组 (共 25 个特征)
+# 2. 定义已重命名的特征分组 (共 29 个特征)
 # ======================================================
 features_all = [
     "Maximum surface pressure",
@@ -102,7 +154,7 @@ features_socio_geo = [
     "Population density",
 ]
 
-# 合并得到 25 个全变量
+# 合并得到 29 个全变量
 all_variables = features_meteo + features_calendar + features_socio_geo
 
 print(f"气象变量 (Meteorological): {len(features_meteo)} 个")
@@ -122,12 +174,26 @@ def get_feature_subgroup(var_name):
 # ======================================================
 # 3. 读取数据
 # ======================================================
-print("\n🔄 正在读取重命名后的数据...")
+print("\n🔄 正在读取分析就绪数据...")
 if not os.path.exists(input_path):
-    raise FileNotFoundError(f"❌ 找不到重命名后的数据集，请检查路径：{input_path}")
+    raise FileNotFoundError(f"❌ 找不到分析就绪数据集，请检查路径：{input_path}")
 
 data = pd.read_csv(input_path)
+data = data.rename(columns={
+    old: new for old, new in FEATURE_RENAME_MAP.items()
+    if old in data.columns and new not in data.columns
+})
 data = data.sort_values("FID").reset_index(drop=True)
+
+required_columns = set(
+    ["FID", "REGION", "YEAR", "WEEK", y_col] + all_variables
+)
+missing_columns = sorted(required_columns.difference(data.columns))
+if missing_columns:
+    raise ValueError(
+        f"analysis_ready_data.csv is missing required columns: {missing_columns}"
+    )
+
 
 # ======================================================
 # 4. 二维四区时空双重划分 (时空隔离架构)
@@ -135,12 +201,12 @@ data = data.sort_values("FID").reset_index(drop=True)
 print("✂️ 正在进行【二维四区】时空隔离划分...")
 
 cities = data["REGION"].unique()
-dev_cities, spat_ext_cities = train_test_split(cities, test_size=0.2, random_state=123)
+dev_cities, spat_eval_cities = train_test_split(cities, test_size=0.2, random_state=123)
 
 dev_data    = data[data["REGION"].isin(dev_cities)]
-spat_ext_df = data[data["REGION"].isin(spat_ext_cities)]
+spat_eval_df = data[data["REGION"].isin(spat_eval_cities)]
 
-temp_ext_df = dev_data[dev_data["YEAR"] >= 2024]
+temp_eval_df = dev_data[dev_data["YEAR"] >= 2024]
 history_df  = dev_data[dev_data["YEAR"] < 2024]
 
 train_df, val_df = train_test_split(
@@ -148,9 +214,9 @@ train_df, val_df = train_test_split(
 )
 
 print(f"  训练集 (Training):       {len(train_df)} 条")
-print(f"  内部验证集 (Internal Val):   {len(val_df)} 条")
-print(f"  时间外部验证 (Temporal Ext): {len(temp_ext_df)} 条")
-print(f"  空间外部验证 (Spatial Ext):  {len(spat_ext_df)} 条")
+print(f"  内部调参集 (Internal tuning):   {len(val_df)} 条")
+print(f"  时间评估 (Temporal evaluation): {len(temp_eval_df)} 条")
+print(f"  空间评估 (Spatial evaluation):  {len(spat_eval_df)} 条")
 
 # ======================================================
 # 5. 为全数据集打上互斥的分区标签
@@ -158,15 +224,14 @@ print(f"  空间外部验证 (Spatial Ext):  {len(spat_ext_df)} 条")
 data['Dataset_Type'] = 'Unknown'
 data.loc[train_df.index,    'Dataset_Type'] = 'Training'
 data.loc[val_df.index,      'Dataset_Type'] = 'Internal_Val'
-data.loc[temp_ext_df.index, 'Dataset_Type'] = 'Temporal_Ext'
-data.loc[spat_ext_df.index, 'Dataset_Type'] = 'Spatial_Ext'
+data.loc[temp_eval_df.index, 'Dataset_Type'] = 'Temporal_Evaluation'
+data.loc[spat_eval_df.index, 'Dataset_Type'] = 'Spatial_Evaluation'
 
 print(f"\n  标签分布验证: {data['Dataset_Type'].value_counts().to_dict()}")
 
 # ======================================================
 # 6. 加载最优超参数
 # ======================================================
-param_json_path = r"E:\USFlu\20260804\1Model\2TiaoCan\catboost_best_params.json"
 with open(param_json_path, 'r', encoding='utf-8') as f:
     best_params = json.load(f)
 best_params.update({'random_state': 123, 'verbose': False})
