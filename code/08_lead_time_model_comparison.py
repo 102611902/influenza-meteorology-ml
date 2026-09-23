@@ -1,10 +1,25 @@
 """
-WM vs SM vs CM 提前 0-4 周预警分析
-四分区全部评估：Training / Internal Val / Temporal External / Spatial External
+
+Input data
+----------
+This script starts from the analysis-ready study-area-week dataset stored at
+``data/analysis_ready_data.csv``. Raw-data acquisition, source provenance,
+and variable construction are documented in ``data/README.md`` and the
+manuscript/Supplementary Information. This script does not recreate the raw
+source databases.
+
+Paths are resolved relative to the repository root so the script can be run
+on another computer without editing local drive paths.
+"""
+
+"""
+MM vs SM vs CM 提前 0-4 周预警分析
+四分区全部评估：Training / Internal tuning / Temporal evaluation / Spatial evaluation
 数据划分方式与原始主模型代码完全一致
 """
 
 import json
+from pathlib import Path
 import os
 import numpy as np
 import pandas as pd
@@ -15,17 +30,52 @@ from sklearn.model_selection import train_test_split
 # ══════════════════════════════════════════════════════════════
 # 0. 配置
 # ══════════════════════════════════════════════════════════════
-DATA_PATH = r"E:\USFlu\20260804\0Data\flu_final_updated_file_renamed.csv"
-PARAM_PATH = r"E:\USFlu\20260804\1Model\2TiaoCan\catboost_best_params.json"
-OUT_DIR = r"E:\USFlu\20260828\1Figure6JiaSur"
-OUT_CSV = os.path.join(OUT_DIR, "lead_k_results_all_partitions1.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "data" / "analysis_ready_data.csv"
+PARAM_PATH = PROJECT_ROOT / "config" / "catboost_best_params.json"
+OUT_DIR = PROJECT_ROOT / "outputs" / "08_lead_time_model_comparison"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_CSV = OUT_DIR / "lead_time_model_comparison.csv"
+
+# Map technical feature names to the human-readable names used in this script.
+FEATURE_RENAME_MAP = {
+    "sp_max": "Maximum surface pressure",
+    "sp_min": "Minimum surface pressure",
+    "solar_rad_max": "Maximum solar radiation",
+    "Temp_anomaly": "Temperature anomaly",
+    "AH_anomaly": "Absolute humidity anomaly",
+    "Temp_max_prior2": "Maximum temperature, 2 weeks prior",
+    "Temp_min_prior5": "Minimum temperature, 5 weeks prior",
+    "AH_mean_prior3": "Mean absolute humidity, 3 weeks prior",
+    "AH_mean_prior4": "Mean absolute humidity, 4 weeks prior",
+    "Precip_sum_prior5": "Total precipitation, 5 weeks prior",
+    "Precip_sum_prior6": "Total precipitation, 6 weeks prior",
+    "Solar_mean_prior5": "Mean solar radiation, 5 weeks prior",
+    "Solar_mean_prior6": "Mean solar radiation, 6 weeks prior",
+    "Temp_anomaly_prior1": "Temperature anomaly, 1 week prior",
+    "Temp_anomaly_prior3": "Temperature anomaly, 3 weeks prior",
+    "Temp_anomaly_prior4": "Temperature anomaly, 4 weeks prior",
+    "Temp_anomaly_prior5": "Temperature anomaly, 5 weeks prior",
+    "Temp_anomaly_prior6": "Temperature anomaly, 6 weeks prior",
+    "RH_anomaly_prior1": "Relative humidity anomaly, 1 week prior",
+    "RH_anomaly_prior6": "Relative humidity anomaly, 6 weeks prior",
+    "AH_anomaly_prior2": "Absolute humidity anomaly, 2 weeks prior",
+    "AH_anomaly_prior5": "Absolute humidity anomaly, 5 weeks prior",
+    "Solar_anomaly_prior1": "Solar radiation anomaly, 1 week prior",
+    "Solar_anomaly_prior3": "Solar radiation anomaly, 3 weeks prior",
+    "Solar_anomaly_prior4": "Solar radiation anomaly, 4 weeks prior",
+    "week_sin": "Calendar week sine",
+    "week_cos": "Calendar week cosine",
+    "hhs_region": "HHS region",
+    "pop_den": "Population density"
+}
 
 TARGET = "positivity_rate_P75_flag"
 REGION = "REGION"
 YEAR_COL = "YEAR"
 
-# 25 个 WM 变量（气象+日历+地理）
-WM_VARS = [
+# 25 个 MM 变量（气象+日历+地理）
+MM_VARS = [
     "Maximum surface pressure",
     "Minimum surface pressure",
     "Maximum solar radiation",
@@ -61,14 +111,26 @@ SM_VARS = [
 ]
 
 # 组合模型变量 (Combined Model, CM)
-CM_VARS = WM_VARS + SM_VARS
+CM_VARS = MM_VARS + SM_VARS
 
 # ══════════════════════════════════════════════════════════════
 # 1. 加载数据与超参数
 # ══════════════════════════════════════════════════════════════
 print(">>> 加载数据...")
 df = pd.read_csv(DATA_PATH)
+df = df.rename(columns={
+    old: new for old, new in FEATURE_RENAME_MAP.items()
+    if old in df.columns and new not in df.columns
+})
 df = df.sort_values([REGION, YEAR_COL, "WEEK"]).reset_index(drop=True)
+
+required_columns = set([REGION, YEAR_COL, "WEEK", TARGET] + MM_VARS)
+missing_columns = sorted(required_columns.difference(df.columns))
+if missing_columns:
+    raise ValueError(
+        f"analysis_ready_data.csv is missing required columns: {missing_columns}"
+    )
+
 print(f"    {len(df)} 行 × {df.shape[1]} 列")
 
 print(">>> 加载超参数...")
@@ -80,7 +142,7 @@ print(f"    {best_params}")
 # 检查监测变量是否存在
 RUN_SURVEILLANCE = all(v in df.columns for v in SM_VARS)
 print(
-    f"    监测变量: {'✓ 全部找到 (跑 WM, SM, CM)' if RUN_SURVEILLANCE else '⚠️  缺少，只跑 WM'}"
+    f"    监测变量: {'✓ 全部找到 (跑 MM, SM, CM)' if RUN_SURVEILLANCE else '⚠️  缺少，只跑 MM'}"
 )
 
 # ══════════════════════════════════════════════════════════════
@@ -89,11 +151,11 @@ print(
 # ══════════════════════════════════════════════════════════════
 print("\n>>> 数据划分...")
 cities = df[REGION].unique()
-dev_cities, spat_ext_cities = train_test_split(
+dev_cities, spat_eval_cities = train_test_split(
     cities, test_size=0.2, random_state=123
 )
 dev_states = list(dev_cities)
-holdout_states = list(spat_ext_cities)
+holdout_states = list(spat_eval_cities)
 
 print(f"    开发州:   {len(dev_states)} 个")
 print(f"    隔离州:   {len(holdout_states)} 个 → {sorted(holdout_states)}")
@@ -115,8 +177,8 @@ for k in range(5):
 
     # 3-2. 切出四个分区（与主模型代码逻辑一致）
     dev_data = df_k[df_k[REGION].isin(dev_states)]
-    spat_ext_df = df_k[df_k[REGION].isin(holdout_states)]
-    temp_ext_df = dev_data[dev_data[YEAR_COL] >= 2024]
+    spat_eval_df = df_k[df_k[REGION].isin(holdout_states)]
+    temp_eval_df = dev_data[dev_data[YEAR_COL] >= 2024]
     history_df = dev_data[dev_data[YEAR_COL] < 2024]
 
     # 3-3. 内部 8:2 分层切分
@@ -129,36 +191,36 @@ for k in range(5):
 
     y_train = train_df["future_flag"]
     y_val = val_df["future_flag"]
-    y_temp_ext = temp_ext_df["future_flag"]
-    y_spat_ext = spat_ext_df["future_flag"]
+    y_temp_eval = temp_eval_df["future_flag"]
+    y_spat_eval = spat_eval_df["future_flag"]
 
     print(
         f"    训练集:          {len(train_df):6d}  事件率={y_train.mean():.3f}"
     )
     print(
-        f"    内部验证集:      {len(val_df):6d}  事件率={y_val.mean():.3f}"
+        f"    内部调参集:      {len(val_df):6d}  事件率={y_val.mean():.3f}"
     )
     print(
-        f"    时间外部验证集:  {len(temp_ext_df):6d}  事件率={y_temp_ext.mean():.3f}"
+        f"    时间评估集:  {len(temp_eval_df):6d}  事件率={y_temp_eval.mean():.3f}"
     )
     print(
-        f"    空间外部验证集:  {len(spat_ext_df):6d}  事件率={y_spat_ext.mean():.3f}"
+        f"    空间评估集:  {len(spat_eval_df):6d}  事件率={y_spat_eval.mean():.3f}"
     )
 
     # 3-4. 定义三个模型的评估分区数据
-    eval_partitions_wm = {
-        "Training": (train_df[WM_VARS], y_train),
-        "Internal Val": (val_df[WM_VARS], y_val),
-        "Temporal External": (temp_ext_df[WM_VARS], y_temp_ext),
-        "Spatial External": (spat_ext_df[WM_VARS], y_spat_ext),
+    eval_partitions_mm = {
+        "Training": (train_df[MM_VARS], y_train),
+        "Internal tuning": (val_df[MM_VARS], y_val),
+        "Temporal evaluation": (temp_eval_df[MM_VARS], y_temp_eval),
+        "Spatial evaluation": (spat_eval_df[MM_VARS], y_spat_eval),
     }
 
     eval_partitions_sm = (
         {
             "Training": (train_df[SM_VARS], y_train),
-            "Internal Val": (val_df[SM_VARS], y_val),
-            "Temporal External": (temp_ext_df[SM_VARS], y_temp_ext),
-            "Spatial External": (spat_ext_df[SM_VARS], y_spat_ext),
+            "Internal tuning": (val_df[SM_VARS], y_val),
+            "Temporal evaluation": (temp_eval_df[SM_VARS], y_temp_eval),
+            "Spatial evaluation": (spat_eval_df[SM_VARS], y_spat_eval),
         }
         if RUN_SURVEILLANCE
         else {}
@@ -167,17 +229,17 @@ for k in range(5):
     eval_partitions_cm = (
         {
             "Training": (train_df[CM_VARS], y_train),
-            "Internal Val": (val_df[CM_VARS], y_val),
-            "Temporal External": (temp_ext_df[CM_VARS], y_temp_ext),
-            "Spatial External": (spat_ext_df[CM_VARS], y_spat_ext),
+            "Internal tuning": (val_df[CM_VARS], y_val),
+            "Temporal evaluation": (temp_eval_df[CM_VARS], y_temp_eval),
+            "Spatial evaluation": (spat_eval_df[CM_VARS], y_spat_eval),
         }
         if RUN_SURVEILLANCE
         else {}
     )
 
-    # 3-5. 训练 WM 模型
-    wm = CatBoostClassifier(**best_params)
-    wm.fit(train_df[WM_VARS], y_train)
+    # 3-5. 训练 MM 模型
+    mm = CatBoostClassifier(**best_params)
+    mm.fit(train_df[MM_VARS], y_train)
 
     # 3-6. 训练 SM & CM 模型
     sm, cm = None, None
@@ -189,21 +251,21 @@ for k in range(5):
         cm.fit(train_df[CM_VARS], y_train)
 
     # 3-7. 四分区评估与结果记录
-    for part_name, (X_wm, y_eval) in eval_partitions_wm.items():
+    for part_name, (X_mm, y_eval) in eval_partitions_mm.items():
 
-        wm_auc = roc_auc_score(y_eval, wm.predict_proba(X_wm)[:, 1])
+        mm_auc = roc_auc_score(y_eval, mm.predict_proba(X_mm)[:, 1])
 
         row = {
             "Lead_weeks": k,
             "Partition": part_name,
             "n_eval": len(y_eval),
             "event_rate": round(float(y_eval.mean()), 4),
-            "WM_AUC": round(wm_auc, 4),
+            "MM_AUC": round(mm_auc, 4),
             "SM_AUC": None,
             "CM_AUC": None,
-            "Delta_CM_WM": None,
+            "Delta_CM_MM": None,
             "Delta_CM_SM": None,
-            "WM_above_080": wm_auc >= 0.80,
+            "MM_above_080": mm_auc >= 0.80,
         }
 
         if RUN_SURVEILLANCE:
@@ -218,14 +280,14 @@ for k in range(5):
             row["CM_AUC"] = round(cm_auc, 4)
 
             # 增量评估
-            row["Delta_CM_WM"] = round(cm_auc - wm_auc, 4)
+            row["Delta_CM_MM"] = round(cm_auc - mm_auc, 4)
             row["Delta_CM_SM"] = round(cm_auc - sm_auc, 4)
 
         all_rows.append(row)
 
-        line = f"    {part_name:22s}: WM={wm_auc:.4f}"
+        line = f"    {part_name:22s}: MM={mm_auc:.4f}"
         if RUN_SURVEILLANCE:
-            line += f"  SM={row['SM_AUC']:.4f}  CM={row['CM_AUC']:.4f}  Δ(CM-WM)={row['Delta_CM_WM']:+.4f}"
+            line += f"  SM={row['SM_AUC']:.4f}  CM={row['CM_AUC']:.4f}  Δ(CM-MM)={row['Delta_CM_MM']:+.4f}"
         print(line)
 
 # ══════════════════════════════════════════════════════════════
@@ -235,9 +297,9 @@ result_df = pd.DataFrame(all_rows)
 
 part_order = [
     "Training",
-    "Internal Val",
-    "Temporal External",
-    "Spatial External",
+    "Internal tuning",
+    "Temporal evaluation",
+    "Spatial evaluation",
 ]
 result_df["Partition"] = pd.Categorical(
     result_df["Partition"], categories=part_order, ordered=True
@@ -251,24 +313,24 @@ result_df = result_df.sort_values(["Lead_weeks", "Partition"]).reset_index(
 # ══════════════════════════════════════════════════════════════
 print("\n" + "=" * 92)
 print(
-    f"{'Lead':>5}  {'Partition':<20}  {'WM_AUC':>8}  {'SM_AUC':>8}  "
-    f"{'CM_AUC':>8}  {'Δ(CM-WM)':>9}  {'Δ(CM-SM)':>9}  {'WM≥0.80':>7}"
+    f"{'Lead':>5}  {'Partition':<20}  {'MM_AUC':>8}  {'SM_AUC':>8}  "
+    f"{'CM_AUC':>8}  {'Δ(CM-MM)':>9}  {'Δ(CM-SM)':>9}  {'MM≥0.80':>7}"
 )
 print("-" * 92)
 for _, r in result_df.iterrows():
     sm_str = f"{r['SM_AUC']:.4f}" if pd.notna(r["SM_AUC"]) else "   N/A"
     cm_str = f"{r['CM_AUC']:.4f}" if pd.notna(r["CM_AUC"]) else "   N/A"
-    dl_wm_str = (
-        f"{r['Delta_CM_WM']:+.4f}" if pd.notna(r["Delta_CM_WM"]) else "     N/A"
+    dl_mm_str = (
+        f"{r['Delta_CM_MM']:+.4f}" if pd.notna(r["Delta_CM_MM"]) else "     N/A"
     )
     dl_sm_str = (
         f"{r['Delta_CM_SM']:+.4f}" if pd.notna(r["Delta_CM_SM"]) else "     N/A"
     )
-    ok_str = "✓" if r["WM_above_080"] else "✗"
+    ok_str = "✓" if r["MM_above_080"] else "✗"
 
     print(
         f"{int(r['Lead_weeks']):>5}  {r['Partition']:<20}  "
-        f"{r['WM_AUC']:.4f}  {sm_str}  {cm_str}  {dl_wm_str}  {dl_sm_str}  {ok_str:>7}"
+        f"{r['MM_AUC']:.4f}  {sm_str}  {cm_str}  {dl_mm_str}  {dl_sm_str}  {ok_str:>7}"
     )
 print("=" * 92)
 
