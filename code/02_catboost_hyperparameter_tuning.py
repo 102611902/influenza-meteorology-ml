@@ -1,6 +1,24 @@
+"""
+Public-repository analysis script.
+
+Input data
+----------
+This script starts from the analysis-ready study-area-week dataset stored at
+``data/analysis_ready_data.csv``. Raw-data acquisition, source provenance,
+and variable construction are documented in ``data/README.md`` and the
+manuscript/Supplementary Information. This script does not recreate the raw
+source databases.
+
+Paths are resolved relative to the repository root so the script can be run
+on another computer without editing local drive paths.
+"""
+
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 import json  # 用于结构化保存和读取最优超参数
@@ -13,14 +31,20 @@ from optuna.samplers import TPESampler
 # 关闭 Optuna 冗长的打印日志，只保留警告，让控制台更干净
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# 使用 TkAgg 后端确保图形能正常弹出
-matplotlib.use('TkAgg')
+# Use a non-interactive backend for headless/server environments.
 
 # ======================================================
 # 1. 读取数据与预处理
 # ======================================================
-print("🔄 Step 1: 正在读取并载入原始流感数据集...")
-data = pd.read_csv(r"E:\USFlu\20260804\0Data\flu_final_updated_file.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "data" / "analysis_ready_data.csv"
+CONFIG_DIR = PROJECT_ROOT / "config"
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "02_catboost_hyperparameter_tuning"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+print("🔄 Step 1: 正在读取分析就绪数据集...")
+data = pd.read_csv(DATA_PATH)
 data = data.sort_values("FID").reset_index(drop=True)
 
 y_col = "positivity_rate_P75_flag"
@@ -28,28 +52,36 @@ drop_cols = ['FID', 'REGION', 'YEAR', 'WEEK', 'week_date', 'total_specimens',
              'total_positive', 'positivity_rate', 'STUSPS', 'positivity_rate_prior1',
              'positivity_rate_prior2', 'positivity_rate_prior3', 'Pop', 'ALAND_SQMI']
 
+required_metadata = {"FID", "REGION", "YEAR", y_col}
+missing_metadata = sorted(required_metadata.difference(data.columns))
+if missing_metadata:
+    raise ValueError(
+        f"analysis_ready_data.csv is missing required columns: {missing_metadata}"
+    )
+
+
 # ======================================================
-# 2. “二维四区” 时空双重独立划分
+# 2. “二维四区” 时空评估划分
 # ======================================================
 print("✂️ Step 2: 正在进行 [二维四区] 时空隔离划分...")
 
 # 【第一步：空间地理隔离】
 cities = data["REGION"].unique()
-dev_cities, spat_ext_cities = train_test_split(cities, test_size=0.2, random_state=123)
+dev_cities, spat_eval_cities = train_test_split(cities, test_size=0.2, random_state=123)
 
 dev_data = data[data["REGION"].isin(dev_cities)]
-X_spat_ext = data[data["REGION"].isin(spat_ext_cities)]
-y_spat_ext = X_spat_ext[y_col]
-X_spat_ext = X_spat_ext.drop(drop_cols + [y_col], axis=1, errors='ignore')
+X_spat_eval = data[data["REGION"].isin(spat_eval_cities)]
+y_spat_eval = X_spat_eval[y_col]
+X_spat_eval = X_spat_eval.drop(drop_cols + [y_col], axis=1, errors='ignore')
 
 # 【第二步：时间轴隔离】
-temp_ext_df = dev_data[dev_data["YEAR"] >= 2024]
-y_temp_ext = temp_ext_df[y_col]
-X_temp_ext = temp_ext_df.drop(drop_cols + [y_col], axis=1, errors='ignore')
+temp_eval_df = dev_data[dev_data["YEAR"] >= 2024]
+y_temp_eval = temp_eval_df[y_col]
+X_temp_eval = temp_eval_df.drop(drop_cols + [y_col], axis=1, errors='ignore')
 
 history_df = dev_data[dev_data["YEAR"] < 2024]
 
-# 【第三步：在历史大盘内部随机 8:2 划分最终训练与内部验证 (用于最终画图、定型和后续 RFE)】
+# 【第三步：在历史大盘内部随机 8:2 划分最终训练与内部调参 (用于最终画图、定型和后续 RFE)】
 train_df, val_df = train_test_split(history_df, test_size=0.2, random_state=123, stratify=history_df[y_col])
 
 X_train = train_df.drop(drop_cols + [y_col], axis=1, errors='ignore')
@@ -59,9 +91,9 @@ y_val = val_df[y_col]
 
 print(f"📊 数据集划分最终确认：")
 print(f" └── 1. 训练集样本数 (10-23年随机80%): {len(X_train)} 条")
-print(f" └── 2. 内部验证集样本数 (10-23年随机20%): {len(X_val)} 条")
-print(f" └── 3. 时间外部验证集 (24-26年纯未来): {len(X_temp_ext)} 条")
-print(f" └── 4. 空间外部验证集 (独立20%州全时段): {len(X_spat_ext)} 条")
+print(f" └── 2. 内部调参集样本数 (10-23年随机20%): {len(X_val)} 条")
+print(f" └── 3. 时间评估集 (24-26年纯未来): {len(X_temp_eval)} 条")
+print(f" └── 4. 空间评估集 (隔离20%州全时段): {len(X_spat_eval)} 条")
 
 # ======================================================
 # 3. 自动化超参数寻优 (补充材料记录版：保存每一个Trial的不同折数AUC)
@@ -103,7 +135,7 @@ def objective(trial):
         fold_auc = auc(*roc_curve(y_va, preds)[:2])
         cv_scores.append(fold_auc)
 
-        # 💡 核心改动：把当前参数在这一折的真实 AUC 塞进 Optuna 的独立记录本中
+        # 💡 核心改动：把当前参数在这一折的真实 AUC 塞进 Optuna 的单独记录表中
         trial.set_user_attr(f"Fold_{fold_idx}_AUC", fold_auc)
 
     return np.mean(cv_scores)
@@ -118,8 +150,7 @@ print("最佳 5 折平均 AUC 成绩:", study.best_value)
 print("最优参数字典:", study.best_params)
 
 # 📂 定义统一保存路径
-param_save_dir = r"E:\USFlu\20260804\1Model\2TiaoCan"
-os.makedirs(param_save_dir, exist_ok=True)
+param_save_dir = OUTPUT_DIR
 
 # 💡 核心增补：提取包含“不同参数 + 不同折数 AUC”的完整审计大表（用于论文补充材料）
 print("💾 正在构建并导出用于论文【补充材料】的超参数全折数审计大表...")
@@ -148,7 +179,7 @@ audit_table.to_csv(os.path.join(param_save_dir, "Optuna_Hyperparameter_Tuning_Au
 print(f"✅ 补充材料核心表格已保存至: {os.path.join(param_save_dir, 'Optuna_Hyperparameter_Tuning_Audit.csv')}")
 
 # 单独保存一份最优参数字典 json 文件
-param_json_path = os.path.join(param_save_dir, "catboost_best_params.json")
+param_json_path = CONFIG_DIR / "catboost_best_params.json"
 with open(param_json_path, 'w', encoding='utf-8') as f:
     json.dump(study.best_params, f, indent=4, ensure_ascii=False)
 
@@ -171,8 +202,8 @@ final_model.fit(
 # 最终预测四个分区的概率值
 proba_train = final_model.predict_proba(X_train)[:, 1]
 proba_val = final_model.predict_proba(X_val)[:, 1]
-proba_temp_ext = final_model.predict_proba(X_temp_ext)[:, 1]
-proba_spat_ext = final_model.predict_proba(X_spat_ext)[:, 1]
+proba_temp_eval = final_model.predict_proba(X_temp_eval)[:, 1]
+proba_spat_eval = final_model.predict_proba(X_spat_eval)[:, 1]
 
 
 # ======================================================
@@ -186,9 +217,9 @@ def plot_professional_roc(data_dict, title, save_path):
     plt.figure(figsize=(8.5, 7.5))
     colors_map = {
         "Training Set": "#e78ac3",
-        "Internal Validation": "#FF7F26",
-        "Temporal External": "#1F77B4",
-        "Spatial External": "#2A9D36"
+        "Internal tuningidation": "#FF7F26",
+        "Temporal evaluation": "#1F77B4",
+        "Spatial evaluation": "#2A9D36"
     }
 
     for name, (y_true, y_pred) in data_dict.items():
@@ -217,14 +248,14 @@ def plot_professional_roc(data_dict, title, save_path):
 
 data_to_plot = {
     "Training Set": (y_train, proba_train),
-    "Internal Validation": (y_val, proba_val),
-    "Temporal External": (y_temp_ext, proba_temp_ext),
-    "Spatial External": (y_spat_ext, proba_spat_ext)
+    "Internal tuningidation": (y_val, proba_val),
+    "Temporal evaluation": (y_temp_eval, proba_temp_eval),
+    "Spatial evaluation": (y_spat_eval, proba_spat_eval)
 }
 
 plot_professional_roc(
     data_to_plot,
-    "ROC Curves: Spatio-Temporal Dual Validation (CV Optimized)",
+    "ROC Curves: Spatiotemporal Evaluation (CV Optimized)",
     os.path.join(param_save_dir, "ROC_SpatioTemporal_Professional.png")
 )
 
@@ -235,21 +266,21 @@ print("💾 Step 6: 正在将调参后的最优统计指标与特征重要性写
 
 auc_train = auc(*roc_curve(y_train, proba_train)[:2])
 auc_val = auc(*roc_curve(y_val, proba_val)[:2])
-auc_temp_ext = auc(*roc_curve(y_temp_ext, proba_temp_ext)[:2])
-auc_spat_ext = auc(*roc_curve(y_spat_ext, proba_spat_ext)[:2])
+auc_temp_eval = auc(*roc_curve(y_temp_eval, proba_temp_eval)[:2])
+auc_spat_eval = auc(*roc_curve(y_spat_eval, proba_spat_eval)[:2])
 
 summary_df = pd.DataFrame([{
     "AUC_train": auc_train,
     "AUC_internal_val": auc_val,
-    "AUC_temporal_external": auc_temp_ext,
-    "AUC_spatial_external": auc_spat_ext,
+    "AUC_temporal_evaluation": auc_temp_eval,
+    "AUC_spatial_evaluation": auc_spat_eval,
     "Best_Tuned_Params": str(best_params),
     "Samples_train": len(X_train),
     "Samples_internal_val": len(X_val),
-    "Samples_temporal_external": len(X_temp_ext),
-    "Samples_spatial_external": len(X_spat_ext)
+    "Samples_temporal_evaluation": len(X_temp_eval),
+    "Samples_spatial_evaluation": len(X_spat_eval)
 }])
-summary_df.to_csv(os.path.join(param_save_dir, "Validation_Summary_SpatioTemporal.csv"), index=False)
+summary_df.to_csv(os.path.join(param_save_dir, "Evaluation_Summary_SpatioTemporal.csv"), index=False)
 
 importances_df = pd.DataFrame({
     '特征名称': X_train.columns,
