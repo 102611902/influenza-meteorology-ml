@@ -1,5 +1,20 @@
 # -*- coding: utf-8 -*-
 """
+Public-repository analysis script.
+
+Input data
+----------
+This script starts from the analysis-ready study-area-week dataset stored at
+``data/analysis_ready_data.csv``. Raw-data acquisition, source provenance,
+and variable construction are documented in ``data/README.md`` and the
+manuscript/Supplementary Information. This script does not recreate the raw
+source databases.
+
+Paths are resolved relative to the repository root so the script can be run
+on another computer without editing local drive paths.
+"""
+
+"""
 NRI / IDI / DeLong（解析法，正确实现）
 ======================================================
 Reference:
@@ -7,6 +22,9 @@ Reference:
   Biometrics. 1988;44(3):837-845.
 ======================================================
 """
+
+from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
@@ -18,8 +36,12 @@ from scipy.stats import mannwhitneyu
 import os
 
 # ── 配置 ─────────────────────────────────────────────────────
-DATA_PATH   = r"E:\USFlu\20260804\0Data\flu_final_updated_file.csv"
-OUT_PATH    = r"E:\USFlu\20260804\2Figure\5Table2\NRI_IDI_DeLong_full1.csv"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = PROJECT_ROOT / "data" / "analysis_ready_data.csv"
+PARAM_PATH = PROJECT_ROOT / "config" / "catboost_best_params.json"
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "07_delong_nri_idi"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_PATH = OUTPUT_DIR / "NRI_IDI_DeLong.csv"
 TARGET_COL  = 'positivity_rate_P75_flag'
 REGION_COL  = 'REGION'
 YEAR_COL    = 'YEAR'
@@ -27,15 +49,13 @@ RANDOM_SEED = 123
 TRAIN_YEAR_MAX = 2023
 NRI_THRESHOLD  = 0.5
 
-# 最优超参数（Optuna TPESampler seed=123）
-BEST_PARAMS = {
-    'iterations':    1985,
-    'learning_rate': 0.050684513404147966,
-    'depth':         7,
-    'l2_leaf_reg':   8.748434896659107,
-    'random_seed':   RANDOM_SEED,
-    'verbose':       0,
-}
+# Load the CatBoost hyperparameters archived by the tuning script.
+with open(PARAM_PATH, "r", encoding="utf-8") as f:
+    BEST_PARAMS = json.load(f)
+BEST_PARAMS.update({
+    "random_seed": RANDOM_SEED,
+    "verbose": 0,
+})
 
 MET_VARS = [
     "sp_max", "sp_min", "solar_rad_max", "Temp_anomaly",
@@ -57,18 +77,18 @@ ALL_VARS = MET_VARS + CAL_VARS + GEO_VARS
 print(">>> 加载数据...")
 data = pd.read_csv(DATA_PATH)
 print(f"    {data.shape[0]} 行 × {data.shape[1]} 列")
-missing = [v for v in ALL_VARS + [TARGET_COL] if v not in data.columns]
+missing = [v for v in ALL_VARS + [TARGET_COL, REGION_COL, YEAR_COL] if v not in data.columns]
 if missing:
     raise ValueError(f"以下列未找到：{missing}")
 
 # ── 2. 数据划分 ───────────────────────────────────────────────
 print("\n>>> 数据分区...")
 cities = data[REGION_COL].unique()
-dev_cities, spat_ext_cities = train_test_split(
+dev_cities, spat_eval_cities = train_test_split(
     cities, test_size=0.2, random_state=RANDOM_SEED
 )
 dev_states     = list(dev_cities)
-holdout_states = list(spat_ext_cities)
+holdout_states = list(spat_eval_cities)
 
 df_dev  = data[data[REGION_COL].isin(dev_states)].copy()
 df_spat = data[data[REGION_COL].isin(holdout_states)].copy()
@@ -85,9 +105,9 @@ X_spat = df_spat[ALL_VARS]; y_spat = df_spat[TARGET_COL]
 
 PARTITIONS = {
     'Training':          (X_train, y_train),
-    'Internal Val':      (X_val,   y_val),
-    'Temporal External': (X_temp,  y_temp),
-    'Spatial External':  (X_spat,  y_spat),
+    'Internal tuning':      (X_val,   y_val),
+    'Temporal evaluation': (X_temp,  y_temp),
+    'Spatial evaluation':  (X_spat,  y_spat),
 }
 for name, (X, y) in PARTITIONS.items():
     print(f"    {name:22s}: n={len(X):6d}  事件率={y.mean():.4f}")
